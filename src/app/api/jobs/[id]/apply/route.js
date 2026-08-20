@@ -5,25 +5,59 @@ import { prisma } from "@/lib/db";
 export async function POST(request, { params }) {
   const { id } = await params;
   const jobId = parseInt(id);
-  if (isNaN(jobId)) return errorResponse("Invalid Job ID", 400);
+
+  if (isNaN(jobId)) {
+    return errorResponse("Invalid Job ID", 400);
+  }
 
   const user = getAuthUser(request);
-  if (!user) return errorResponse("UNAUTHORIZED", 401);
-  if (user.role !== "SEEKER") return errorResponse("FORBIDDEN", 403);
 
-  const body = await request.json();
-  const { cvUrl, coverLetter, yearsOfExperience } = body;
+  if (!user) {
+    return errorResponse("UNAUTHORIZED", 401);
+  }
 
-  // verify fields
-  if (cvUrl === "" || coverLetter === "" || yearsOfExperience === "")
-    return errorResponse("Please fill all fields!", 400);
+  if (user.role !== "SEEKER") {
+    return errorResponse("FORBIDDEN: Seekers only", 403);
+  }
 
   try {
+    const body = await request.json();
+
+    const {
+      cvUrl,
+      coverLetter,
+      yearsOfExperience,
+    } = body;
+
+    // Validate fields
+    if (
+      !cvUrl?.trim() ||
+      !coverLetter?.trim() ||
+      !yearsOfExperience?.trim()
+    ) {
+      return errorResponse("Please fill all fields!", 400);
+    }
+
+    // Check whether the job exists
+    const job = await prisma.job.findUnique({
+      where: {
+        id: jobId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!job) {
+      return errorResponse("Job does not exist!", 404);
+    }
+
+    // Create application
     const application = await prisma.application.create({
       data: {
-        cvUrl,
-        coverLetter,
-        yearsOfExperience,
+        cvUrl: cvUrl.trim(),
+        coverLetter: coverLetter.trim(),
+        yearsOfExperience: yearsOfExperience.trim(),
         seekerId: user.id,
         jobId: jobId,
       },
@@ -37,54 +71,82 @@ export async function POST(request, { params }) {
       201,
     );
   } catch (err) {
-    if (err.code === "P2002")
-      return errorResponse({
-        message: "You have already applied for this job!",
-        error: err,
-      });
-    return errorResponse({ message: "Error applying to the job", error: err });
+    // Prisma unique constraint
+    if (err.code === "P2002") {
+      return errorResponse(
+        "You have already applied for this job!",
+        409,
+      );
+    }
+
+    console.error("Application error:", err);
+
+    return errorResponse(
+      "Error applying to the job",
+      500,
+    );
   }
 }
 
 export async function DELETE(request, { params }) {
   const { id } = await params;
   const jobId = parseInt(id);
-  if (isNaN(jobId)) return errorResponse("Invalid Job ID", 400);
+
+  if (isNaN(jobId)) {
+    return errorResponse("Invalid Job ID", 400);
+  }
 
   const user = getAuthUser(request);
-  if (!user) return errorResponse("UNAUTHORIZED", 401);
-  if (user.role !== "SEEKER") return errorResponse("FORBIDDEN", 403);
+
+  if (!user) {
+    return errorResponse("UNAUTHORIZED", 401);
+  }
+
+  if (user.role !== "SEEKER") {
+    return errorResponse("FORBIDDEN", 403);
+  }
 
   try {
-    const existingApplication = await prisma.application.findUnique({
-      where: {
-        jobId_seekerId: {
-          jobId,
-          seekerId: user.id,
+    const existingApplication =
+      await prisma.application.findUnique({
+        where: {
+          jobId_seekerId: {
+            jobId: jobId,
+            seekerId: user.id,
+          },
         },
-      },
-      select: { id: true },
-    });
+        select: {
+          id: true,
+        },
+      });
 
-    console.log("Existing Application: ", existingApplication);
-
-    if (!existingApplication)
+    if (!existingApplication) {
       return errorResponse(
-        { message: "You have yet to apply for the job!" },
+        "You have yet to apply for the job!",
         404,
       );
+    }
 
-    const removedApplication = await prisma.application.delete({
-      where: {
-        id: existingApplication.id,
+    const removedApplication =
+      await prisma.application.delete({
+        where: {
+          id: existingApplication.id,
+        },
+      });
+
+    return successResponse(
+      {
+        message: "Application withdrawn successfully!",
+        data: removedApplication,
       },
-    });
-
-    return successResponse(removedApplication, 404);
+      200,
+    );
   } catch (err) {
-    return errorResponse({
-      message: "Error Unapplying to the job",
-      error: err,
-    });
+    console.error("Unapply error:", err);
+
+    return errorResponse(
+      "Error withdrawing the application",
+      500,
+    );
   }
 }
